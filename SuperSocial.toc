@@ -2,7 +2,7 @@
 ## Title: Super Social
 ## Notes: Mass whisper your /who results and reply to everyone who answers, on WoW Forever.
 ## Author: miyanko
-## Version: 5.0.0
+## Version: 1.0.0
 ## Category: Social
 ## IconTexture: 134149
 ## SavedVariables: SuperSocialDB
@@ -10,7 +10,10 @@
 ## AddonCompartmentFuncOnEnter: SuperSocial_CompartmentEnter
 ## AddonCompartmentFuncOnLeave: SuperSocial_CompartmentLeave
 
-# Load order is the dependency order: Core exports ns.* before Commands and UI read it.
+# Load order is the dependency order: the libraries first, then Core exports ns.* before Commands and UI read it.
+
+Libs\LibStub\LibStub.lua
+Libs\LibNativeUI-1.0\LibNativeUI-1.0.lua
 
 Core\Lockdown.lua
 Core\Names.lua

@@ -65,6 +65,9 @@ local function newFrame()
     function f:IsShown() return self._shown end
     function f:IsVisible() return self._shown and (not self._parent or self._parent:IsVisible()) end
     function f:SetPoint(point, ...) self._points[point] = { ... } end
+    function f:ClearAllPoints() self._points = {} end
+    function f:GetPoint() return "CENTER", nil, "CENTER", 0, 0 end
+    function f:SetFontObject() end
     function f:SetSize() end
     function f:SetWidth() end
     function f:SetHeight() end
@@ -90,20 +93,13 @@ end
 
 --=== template-provided children ============================================
 -- ButtonFrameTemplate hands the frame a portrait, a TitleContainer, a CloseButton and its Inset
--- (PortraitFrameMixin, SharedUIPanelTemplates.xml), and ScrollFrameTemplate builds an 8 px wide
--- MinimalScrollBar in its OnLoad; the stub supplies them too.
-local scrollFrames = {}
+-- (PortraitFrameMixin, SharedUIPanelTemplates.xml); the stub supplies them too. Any other template
+-- fails the load, so the panel can't quietly grow a scroll frame.
 local KNOWN_TEMPLATES = {
     ButtonFrameTemplate = function(f)
         f.TitleContainer = newFrame(); f.CloseButton = newFrame(); f.Inset = newFrame()
         function f:SetPortraitToAsset(texture) self._portrait = texture end
         function f:SetTitle(title) self._title = title end
-    end,
-    InsetFrameTemplate = function(f) f.NineSlice = newFrame() end,
-    ScrollFrameTemplate = function(f)
-        f.ScrollBar = newFrame()
-        function f.ScrollBar:GetWidth() return 8 end
-        scrollFrames[#scrollFrames + 1] = f
     end,
 }
 
@@ -153,15 +149,14 @@ ColorManager = {
         return { color = colorObject("ffffff") }
     end,
 }
-PANEL_INSET_LEFT_OFFSET = 4
-PANEL_INSET_RIGHT_OFFSET = -6
-SCROLL_FRAME_SCROLL_BAR_OFFSET_LEFT = 6
 function ButtonFrameTemplate_HideButtonBar(frame) frame._buttonBarHidden = true end
 
 function GetTime() return now end
 function time() return wallclock end
 function wipe(t) for k in pairs(t) do t[k] = nil end return t end
 function tinsert(t, v) t[#t + 1] = v end
+-- LibStub reads library versions with the client's string alias.
+strmatch = string.match
 
 C_Timer = {
     After = function(delay, fn) schedule(delay, fn) end,
@@ -196,6 +191,14 @@ function UnitRealmRelationship(unit)
     return LE_REALM_RELATION_SAME
 end
 function UnitExists(unit) return unit ~= "target" or TARGET_NAME ~= nil end
+PLAYER_LEVEL = 52
+function UnitLevel() return PLAYER_LEVEL end
+function GetMaxPlayerLevel() return 60 end
+ZONE_TEXT = "Orgrimmar"
+function GetAreaText() return ZONE_TEXT end
+LOCALIZED_CLASS_NAMES_MALE = { MAGE = "Mage", WARLOCK = "Warlock" }
+WHO_TAG_CLASS = "c-"
+WHO_TAG_ZONE = "z-"
 function UnitIsPlayer() return true end
 
 --=== chat ===================================================================
@@ -231,17 +234,21 @@ ERR_CHAT_RESTRICTED_TRIAL = ERR_CHAT_RESTRICTED
 
 --=== who list ===============================================================
 local whoResults = {}
+-- The server caps the list; a total above the rows shown is what a capped answer reports.
+local whoTotal
+local lastWhoQuery
 local whoToUi = false
 -- RequiresFriendList: the who calls return nothing while the friend list is unavailable.
 local friendListReady = true
 C_FriendList = {
     GetNumWhoResults = function()
         if not friendListReady then return end
-        return #whoResults, #whoResults
+        return #whoResults, whoTotal or #whoResults
     end,
     GetWhoInfo = function(i) return whoResults[i] end,
     SetWhoToUi = function(v) whoToUi = v end,
-    SendWho = function()
+    SendWho = function(filter)
+        lastWhoQuery = filter
         schedule(0.5, function() fire("WHO_LIST_UPDATE") end)
     end,
 }
@@ -293,8 +300,22 @@ LFGParentFrame = newFrame()
 LFGWhoListFrame = newFrame()
 LFGWhoListFrame._parent = LFGParentFrame
 LFGWhoListFrame:RegisterEvent("WHO_LIST_UPDATE")
+-- The context menu records its rows; OpenChat records what it would type into the chat box.
+local menuRows = {}
+local openedChat
 ChatFrameUtil = {
     AddMessageEventFilter = function(event, fn) chatFilters[event] = fn end,
+    OpenChat = function(text) openedChat = text end,
+}
+MenuUtil = {
+    CreateContextMenu = function(owner, generator)
+        menuRows = {}
+        local root = {}
+        function root:CreateTitle(text) menuRows[#menuRows + 1] = { text = text } end
+        function root:CreateButton(text, callback) menuRows[#menuRows + 1] = { text = text, callback = callback } end
+        function root:CreateDivider() end
+        generator(owner, root)
+    end,
 }
 
 -- The argument is declared Nilable = false, so nil raises. Strict issecretvalue never answers for a
@@ -376,8 +397,9 @@ end
 
 local function setWho(names)
     whoResults = {}
+    whoTotal = nil
     for _, n in ipairs(names) do
-        whoResults[#whoResults + 1] = { fullName = n, classStr = "Mage", area = "Stormwind" }
+        whoResults[#whoResults + 1] = { fullName = n, classStr = "Mage", area = "Stormwind", filename = "MAGE", level = 60 }
     end
 end
 
@@ -650,6 +672,121 @@ expect("-who survived an empty who count", okWait)
 expect("-who timed out instead of whispering", seen("Nobody found") and #whisperLog == 0, "sent " .. #whisperLog)
 friendListReady = true
 
+print("\n-- you are left out of your own /who silently --")
+resetRun()
+setWho({ "Selfy Mcself", "Aaa" })
+SlashCmdList["WHISPERWHO"]("hi")
+runTimers(now + 30)
+expect("only the other row whispered", #whisperLog == 1 and targetOf(1) == "Aaa", "got " .. #whisperLog .. " to " .. targetOf(1))
+expect("no phantom groupmate", not seen("in your group") and not seen("Skipped"))
+expect("pool counts only the others", seen("Whispering all 1 /who result%."))
+
+print("\n-- flags match in any case --")
+resetRun()
+setWho({ "Aaa", "Bbb" })
+SlashCmdList["WHISPERWHO"]("-Limit 1 hi")
+runTimers(now + 30)
+expect("-Limit honoured", #whisperLog == 1 and not seen("Flags go before"), "got " .. #whisperLog)
+
+print("\n-- a capped plain /who says so --")
+resetRun()
+setWho({ "Aaa" })
+whoTotal = 40
+SlashCmdList["WHISPERWHO"]("hi")
+runTimers(now + 30)
+expect("capped note on /ww", seen("1 of 40 matches shown"))
+
+--=== /wf =====================================================================
+local function setWhoRows(rows)
+    whoResults = {}
+    whoTotal = nil
+    for _, row in ipairs(rows) do
+        whoResults[#whoResults + 1] = { fullName = row[1], filename = row[2], level = row[3], classStr = row[2], area = ZONE_TEXT }
+    end
+end
+
+local function whisperFind(input)
+    resetRun()
+    lastWhoQuery = nil
+    SlashCmdList["WHISPERFIND"](input)
+    runTimers(now + 30)
+end
+
+print("\n-- /wf summon finds warlocks 20-60 anywhere and post-filters the rows --")
+setWhoRows({ { "Lock One", "WARLOCK", 60 }, { "Mage Guildie", "MAGE", 60 }, { "Low Lock", "WARLOCK", 12 } })
+whisperFind("summon LF summon to BRD")
+expect("query names the class and range", lastWhoQuery == 'c-"Warlock" 20-60', tostring(lastWhoQuery))
+expect("only the level-60 warlock whispered", #whisperLog == 1 and targetOf(1) == "Lock One", "got " .. #whisperLog .. " to " .. targetOf(1))
+expect("wrong class and level leave the pool silently", not seen("filtered") and not seen("Skipped"))
+expect("opening line names the pool and the default cooldown", seen("Whispering all 1 warlock 20%-60, 15 min cooldown%."))
+
+print("\n-- /wf with no fitting row names the missing pool --")
+setWhoRows({ { "Mage Guildie", "MAGE", 60 } })
+whisperFind("summon LF summon to BRD")
+expect("nobody whispered", #whisperLog == 0, "got " .. #whisperLog)
+expect("names the pool, not zero results", seen("No warlocks 20%-60 online%.") and not seen("None of"))
+
+print("\n-- an empty /wf answer names the pool --")
+setWhoRows({})
+whisperFind("port LF portal to Undercity")
+expect("timeout names the missing mages", seen("No mages 40%-60 in Orgrimmar online, or /who is throttled%.") and not seen("came back empty"))
+
+print("\n-- /wf port finds mages 40-60 here --")
+setWhoRows({ { "Port Mage", "MAGE", 45 } })
+whisperFind("port LF portal to Undercity")
+expect("query adds the zone", lastWhoQuery == 'c-"Mage" 40-60 z-"Orgrimmar"', tostring(lastWhoQuery))
+expect("opening line names the zone", seen("mage 40%-60 in Orgrimmar"))
+
+print("\n-- /wf water and food find mages from your level here --")
+setWhoRows({ { "Water Mage", "MAGE", 55 }, { "Young Mage", "MAGE", 30 } })
+whisperFind("water WTB water")
+expect("range starts at your level", lastWhoQuery == 'c-"Mage" 52-60 z-"Orgrimmar"', tostring(lastWhoQuery))
+expect("a lower mage is filtered", #whisperLog == 1 and targetOf(1) == "Water Mage", "got " .. targetOf(1))
+PLAYER_LEVEL = 60
+whisperFind("food WTB food")
+expect("food is water, a single level at the cap", lastWhoQuery == 'c-"Mage" 60 z-"Orgrimmar"', tostring(lastWhoQuery))
+PLAYER_LEVEL = 52
+
+print("\n-- /wf click finds everyone here, 10 at a time --")
+local crowd = {}
+for i = 1, 12 do crowd[i] = { "Clicker" .. string.char(64 + i), "WARRIOR", 10 + i } end
+setWhoRows(crowd)
+whisperFind("click")
+expect("bare kind without a message asks for one", seen("No message yet%.") and seen("Type it after /wf click%.") and lastWhoQuery == nil)
+whisperFind("click need 2 clickers at the stone")
+expect("query is the zone alone", lastWhoQuery == 'z-"Orgrimmar"', tostring(lastWhoQuery))
+expect("default limit of 10", #whisperLog == 10 and seen("2 over the limit"), "got " .. #whisperLog)
+
+print("\n-- /wf -in overrides the zone --")
+setWhoRows({ { "Far Lock", "WARLOCK", 60 } })
+whisperFind("summon -in (Searing Gorge) summon me please")
+expect("zone from -in", lastWhoQuery == 'c-"Warlock" 20-60 z-"Searing Gorge"', tostring(lastWhoQuery))
+
+print("\n-- a bare /wf KIND repeats the last message to new people --")
+setWhoRows({ { "Mage Aa", "MAGE", 50 }, { "Mage Bb", "MAGE", 50 } })
+whisperFind("port -limit 1 port to TB?")
+expect("first run reached one mage", #whisperLog == 1 and targetOf(1) == "Mage Aa", "got " .. targetOf(1))
+whisperFind("port")
+expect("message reused", #whisperLog == 1 and whisperLog[1].text == "port to TB?", "got " .. tostring(whisperLog[1] and whisperLog[1].text))
+expect("the cooldown moved on to the next mage", targetOf(1) == "Mage Bb" and seen("1 on cooldown"), "got " .. targetOf(1))
+
+print("\n-- /wf refuses what it can't use --")
+whisperFind("dance hi")
+expect("unknown kind shows usage", seen("Usage: /wf"))
+whisperFind("port -who (mage) hi")
+expect("-who refused on /wf", seen("%-who doesn't apply to /wf"))
+resetRun()
+SlashCmdList["WHISPERWHO"]("-in (Orgrimmar) hi")
+expect("-in refused on /ww", seen("%-in applies to /wf only") and #whisperLog == 0)
+resetRun()
+SlashCmdList["REPLYRECENT"]("-in (Orgrimmar) hi")
+expect("-in refused on /rr", seen("%-in doesn't apply to /rr"))
+restrictionActive = true
+whisperFind("port hi")
+expect("/wf refused under a lockdown", seen("Chat restricted here") and lastWhoQuery == nil)
+restrictionActive = false
+SlashCmdList["SUPERSOCIAL"]("-cd clear")
+
 --=== /ws =====================================================================
 -- A result row as the client hands it over; a row holding your own auction names you "player".
 local function resultRow(owners, total)
@@ -827,7 +964,7 @@ whisperSellers("hi")
 expect("new visit starts without a listing", seen("No item listings open") and #whisperLog == 0, "sent " .. #whisperLog)
 closeAuctionHouse()
 
-print("\n-- the /ss panel builds on ButtonFrameTemplate --")
+print("\n-- the /ss cheat sheet builds on LibNativeUI's window --")
 resetRun()
 SlashCmdList["SUPERSOCIAL"]("")
 local panel = _G.SuperSocialFrame
@@ -838,25 +975,46 @@ expect("title without version", panel and panel._title == "Super Social", "got "
 expect("portrait is the toc icon", panel and panel._portrait == 134149)
 expect("strata HIGH", panel and panel._strata == "HIGH")
 expect("button bar hidden", panel and panel._buttonBarHidden == true)
-local scrollRight = scrollFrames[1] and scrollFrames[1]._points.BOTTOMRIGHT
-expect("scroll gutter fits the 8 px bar at +6 plus the inset pad", scrollRight and scrollRight[1] == -22,
-    "got " .. tostring(scrollRight and scrollRight[1]))
-local panelMentionsWs = false
+expect("close works in combat", panel and panel.onCloseCallback ~= nil)
+local panelText = {}
 for _, f in ipairs(frames) do
-    if type(f._text) == "string" and f._text:find("/ws", 1, true) then panelMentionsWs = true end
+    if type(f._text) == "string" then panelText[#panelText + 1] = f._text end
 end
-expect("panel lists /ws", panelMentionsWs)
+panelText = table.concat(panelText, "\n")
+expect("panel lists /ws, /wf and -in", panelText:find("/ws", 1, true) and panelText:find("/wf", 1, true) and panelText:find("-in", 1, true))
+expect("panel drops /ss quiet", not panelText:find("/ss quiet", 1, true))
+expect("bare /rr has its own row", panelText:find("List who is still waiting.", 1, true))
 SlashCmdList["SUPERSOCIAL"]("")
 expect("second /ss closes it", panel and not panel:IsShown())
 
-print("\n-- rate and quiet subcommands --")
+print("\n-- the addon menu opens the find shortcuts --")
+SuperSocial_CompartmentClick("SuperSocial", "LeftButton")
+local menuTexts = {}
+for _, row in ipairs(menuRows) do
+    if row.callback then menuTexts[#menuTexts + 1] = row.text end
+end
+expect("five rows in order", table.concat(menuTexts, "|") == "Find Warlock (Summon)|Find Clickers Here|Find Mage (Portal)|Find Mage (Food and Water)|Command Reference",
+    table.concat(menuTexts, "|"))
+local opened = {}
+for i = 2, 5 do
+    menuRows[i].callback()
+    opened[#opened + 1] = tostring(openedChat)
+end
+expect("find rows prefill /wf", table.concat(opened, "|") == "/wf summon |/wf click |/wf port |/wf water ", table.concat(opened, "|"))
+menuRows[#menuRows].callback()
+expect("Command Reference opens the cheat sheet", panel and panel:IsShown())
+SlashCmdList["SUPERSOCIAL"]("")
+
+print("\n-- /supersocial is the long form of /ss --")
+expect("alias registered", SLASH_SUPERSOCIAL1 == "/supersocial" and SLASH_SUPERSOCIAL2 == "/ss")
+
+print("\n-- /ss rate --")
 resetRun()
 SlashCmdList["SUPERSOCIAL"]("rate")
 expect("rate reported", seen("Send rate"))
 resetRun()
-SlashCmdList["SUPERSOCIAL"]("quiet off")
-expect("quiet toggled", seen("Quiet mode off"))
-SlashCmdList["SUPERSOCIAL"]("quiet on")
+SlashCmdList["SUPERSOCIAL"]("quiet")
+expect("/ss quiet is gone", seen("Unknown command"))
 
 print("\n-- secret payloads are ignored, not parsed --")
 resetRun()

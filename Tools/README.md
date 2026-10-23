@@ -4,15 +4,20 @@ Development only. Nothing here is listed in a toc, so the client never loads it.
 
 ## harness.lua
 
-A stub WoW Forever 1.60.1 client that loads `SuperSocial.toc`'s file list in order, starting from no
+A stub WoW Forever 1.60.1 client that loads `SuperSocial.toc`'s file list in order, libraries included, starting from no
 saved variables, and drives every slash command. The stub has `LFGWhoListFrame` as the only who
 listener, `ChatFrameUtil` as the filter API, unit names as first name plus surname with
 `RegionalUniqueNamesEnabled()` true (and a pass with it false, where a realm rides behind `-` across
 realms), secret chat payloads and an active chat lockdown.
 
-The `/ss` panel is built against stub `ButtonFrameTemplate`, `InsetFrameTemplate` and
-`ScrollFrameTemplate` children, which checks the title, portrait, strata, hidden button bar, Escape
-registration and the scroll gutter, not how the panel looks.
+The `/ss` cheat sheet is built through LibNativeUI's `CreateWindow` against a stub `ButtonFrameTemplate`
+(any other template fails the load), which checks the title, portrait, strata, hidden button bar,
+combat-safe close, Escape registration and the listed commands, not how the panel looks. The addon
+menu runs against a stub `MenuUtil.CreateContextMenu` and `ChatFrameUtil.OpenChat`.
+
+`/wf` runs against stub `GetAreaText`, `UnitLevel`, `GetMaxPlayerLevel` and who rows with `filename`
+and `level`. The cases check each preset's query, the class and level post-filter, `-in`, the
+default limit and cooldown, message reuse and the refusals.
 
 `/ws` runs against a stub `C_AuctionHouse` with item and commodity search results, the
 `AUCTION_HOUSE_SHOW`/`AUCTION_HOUSE_CLOSED` and `ITEM_SEARCH_RESULTS_UPDATED`/`COMMODITY_SEARCH_RESULTS_UPDATED`
@@ -52,6 +57,6 @@ Two cases pin client details the stub models: the Who tab inside a closed Group 
 Exits non-zero when any expectation fails. Lua 5.2 or newer.
 
 What it proves: load order, that every `ns.*` capture resolves, and the control flow of each command.
-What it cannot prove: anything about the real client — frame layout, whether the server actually
+What it cannot prove: anything about the real client, such as frame layout, whether the server actually
 fires an event, which spelling each API really returns, or what a genuine secret value does to a
 string operation. Those belong in in-game checks.

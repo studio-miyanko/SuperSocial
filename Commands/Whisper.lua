@@ -1,6 +1,6 @@
 local _, ns = ...
 
--- The outgoing commands: /ww blasts the current or a fresh /who list, /wt whispers the selected player, and /ws whispers the sellers of the auction house listing on screen. All hand every whisper to the queue.
+-- The outgoing commands: /ww blasts the current or a fresh /who list, /wf runs a preset /who for a service and blasts it, /wt whispers the selected player, and /ws whispers the sellers of the auction house listing on screen. All hand every whisper to the queue.
 
 local ok = ns.Ok
 local fail = ns.Fail
@@ -17,7 +17,7 @@ local function whisperTarget(input)
     for t in input:gmatch("%S+") do tokens[#tokens + 1] = t end
     local cursor = 1
     local cooldownSeconds
-    if tokens[cursor] == "-cd" then
+    if tokens[cursor] and tokens[cursor]:lower() == "-cd" then
         cooldownSeconds = tokens[cursor + 1] and parseDuration(tokens[cursor + 1])
         if not cooldownSeconds then
             fail("-cd needs a duration.", DURATION_HINT)
@@ -109,24 +109,40 @@ local function sendBlast(opts, lists, eligible, counts, total, singular, multipl
     ns.TrackWhispered(sentNames)
 end
 
+-- A /wf row must be the class and level the preset asked for, so a guild or zone name that merely contains "mage" never slips through the server's text match. filename is nilable, so a row without it trusts the server's class match.
+local function fitsPreset(whoInfo, find)
+    if not find then return true end
+    if find.classFile and whoInfo.filename and whoInfo.filename ~= find.classFile then return false end
+    if find.minLevel and whoInfo.level < find.minLevel then return false end
+    return not find.maxLevel or whoInfo.level <= find.maxLevel
+end
+
 local function dispatchWho(opts)
     -- The who list is RequiresFriendList, which returns nothing while the friend list is unavailable.
-    local count = C_FriendList.GetNumWhoResults() or 0
+    local count, total = C_FriendList.GetNumWhoResults()
+    count = count or 0
     if count == 0 then
         fail("No /who results.", "Run /who first, or use -who (…).")
         return
     end
+    if total and total > count then
+        note(count .. " of " .. total .. " matches shown. Narrow the filter for the rest.")
+    end
 
     local groupSet = ns.BuildGroupSet()
     local lists = loadLists(opts)
+    local me = ns.UnitFullName("player")
 
-    -- Keys are the ones ns.SkipLine reads, counted in the order the checks run.
+    -- Keys are the ones ns.SkipLine reads, counted in the order the checks run. You and rows outside a /wf preset leave the pool without a skip reason, because neither is the pool the run names.
     local counts = { blocked = 0, cooldown = 0, filter = 0, group = 0, recentGroup = 0 }
     local eligible = {}
+    local pool = count
     for i = 1, count do
         local whoInfo = C_FriendList.GetWhoInfo(i)
         local fullName = whoInfo and whoInfo.fullName
-        if fullName then
+        if fullName and (ns.SameName(fullName, me) or not fitsPreset(whoInfo, opts.find)) then
+            pool = pool - 1
+        elseif fullName then
             local groupReason = ns.GroupSkip(groupSet, fullName)
             if groupReason then
                 counts[groupReason] = counts[groupReason] + 1
@@ -142,7 +158,12 @@ local function dispatchWho(opts)
         end
     end
 
-    sendBlast(opts, lists, eligible, counts, count, "/who result", "/who results")
+    if opts.find and pool == 0 then
+        fail("Nobody found.", "No " .. opts.find.multiple .. " online.")
+        return
+    end
+    local find = opts.find or { singular = "/who result", multiple = "/who results" }
+    sendBlast(opts, lists, eligible, counts, pool, find.singular, find.multiple)
 end
 
 local WHO_TIMEOUT = 6      -- Seconds to wait for the server's answer before aborting, since the who list still holds the previous search.
@@ -188,19 +209,20 @@ local function runWho(opts)
     whoWaiter:RegisterEvent("WHO_LIST_UPDATE")
     -- A /who fires WHO_LIST_UPDATE twice: once to clear the old rows, then again when the server's answer lands. Only the second one carries results.
     whoWaiter:SetScript("OnEvent", function()
-        local count, total = C_FriendList.GetNumWhoResults()
+        local count = C_FriendList.GetNumWhoResults()
         if not count or count == 0 then return end
         stop()
-        if total and total > count then
-            note(count .. " of " .. total .. " matches shown. Narrow the filter for the rest.")
-        end
         dispatchWho(opts)
     end)
 
     C_Timer.After(WHO_TIMEOUT, function()
         if not live() then return end
         stop()
-        fail("Nobody found.", "\"" .. opts.who .. "\" came back empty or /who is throttled. Retry in a few seconds.")
+        if opts.find then
+            fail("Nobody found.", "No " .. opts.find.multiple .. " online, or /who is throttled. Retry in a minute.")
+        else
+            fail("Nobody found.", "\"" .. opts.who .. "\" came back empty or /who is throttled. Retry in a few seconds.")
+        end
     end)
     -- Restore on a fixed clock rather than on completion, because a straggling answer after the timeout would otherwise pop the panel. A newer run owns the plumbing by then, so this one leaves it alone or it would route that run's results back to chat.
     C_Timer.After(PANEL_RESTORE, function()
@@ -218,12 +240,107 @@ local function whisperWho(input)
         note("Usage: /ww MESSAGE whispers your /who results, e.g. /ww LFM SM live. /ss lists every flag.")
         return
     end
+    if ns.UsedBracket(opts, "-in") then
+        fail("-in applies to /wf only.", "Put the zone inside -who, e.g. -who (z-\"Searing Gorge\").")
+        return
+    end
     if refuseRestricted() then return end
     if opts.who then
         runWho(opts)
     else
         dispatchWho(opts)
     end
+end
+
+-- /wf defaults: one helper is enough for a service, and the cooldown makes a retry reach new people instead of the same ones.
+local FIND_LIMIT = 10
+local FIND_COOLDOWN = 15 * 60
+
+-- Who can provide each service, per Wowhead Forever: Ritual of Summoning (spell 698) from 20, city portals (11417 and siblings) from 40, and water you can drink from a mage of at least your level. A summon reaches you anywhere; the rest need the mage or the clickers where you stand.
+local FIND_PRESETS = {
+    summon = { classFile = "WARLOCK", minLevel = 20, noun = "warlock", nouns = "warlocks" },
+    port = { classFile = "MAGE", minLevel = 40, here = true, noun = "mage", nouns = "mages" },
+    water = { classFile = "MAGE", ownLevel = true, here = true, noun = "mage", nouns = "mages" },
+    click = { here = true, noun = "player", nouns = "players" },
+}
+
+local FIND_USAGE = "Usage: /wf KIND MESSAGE finds and whispers a warlock to summon, a mage to port or for water, or clickers here. KIND is summon, port, water or click, e.g. /wf port LF portal to Undercity. A bare /wf KIND repeats the last message."
+
+-- The last message per kind, so a retry is just /wf port.
+local function findMessages()
+    SuperSocialDB = SuperSocialDB or {}
+    SuperSocialDB.findMessages = SuperSocialDB.findMessages or {}
+    return SuperSocialDB.findMessages
+end
+
+-- The /who query and the post-filter for one preset, the way Blizzard's Who panel writes its own zone query (FriendsFrame.lua WhoFrame_GetDefaultWhoCommand). Nil when the zone is unknown.
+local function buildFind(preset, zone)
+    local minLevel = preset.ownLevel and UnitLevel("player") or preset.minLevel
+    local maxLevel = minLevel and GetMaxPlayerLevel()
+    zone = zone or (preset.here and GetAreaText())
+    if zone == "" then return nil end
+
+    local query, scope = {}, {}
+    if preset.classFile then query[#query + 1] = WHO_TAG_CLASS .. "\"" .. LOCALIZED_CLASS_NAMES_MALE[preset.classFile] .. "\"" end
+    if minLevel then
+        local range = minLevel < maxLevel and (minLevel .. "-" .. maxLevel) or tostring(maxLevel)
+        query[#query + 1] = range
+        scope[#scope + 1] = range
+    end
+    if zone then
+        query[#query + 1] = WHO_TAG_ZONE .. "\"" .. zone .. "\""
+        scope[#scope + 1] = "in " .. zone
+    end
+    local suffix = #scope > 0 and (" " .. table.concat(scope, " ")) or ""
+    return {
+        who = table.concat(query, " "),
+        classFile = preset.classFile,
+        minLevel = minLevel,
+        maxLevel = maxLevel,
+        singular = preset.noun .. suffix,
+        multiple = preset.nouns .. suffix,
+    }
+end
+
+local function whisperFind(input)
+    local kind, rest = trim(input):match("^(%S*)%s*(.*)$")
+    kind = kind:lower()
+
+    -- food is the same mages as water, and shares its remembered message.
+    if kind == "food" then kind = "water" end
+    local preset = FIND_PRESETS[kind]
+    if not preset then
+        note(FIND_USAGE)
+        return
+    end
+    local opts = ns.ParseFlags(rest)
+    if ns.FlagMistake(opts, true) then return end
+    if ns.UsedBracket(opts, "-who") then
+        fail("-who doesn't apply to /wf.", "Each kind runs its own /who. -in (Zone) changes the zone.")
+        return
+    end
+    local messages = findMessages()
+    if opts.text == "" then opts.text = messages[kind] or "" end
+    if opts.text == "" then
+        fail("No message yet.", "Type it after /wf " .. kind .. ".")
+        return
+    end
+    if refuseRestricted() then return end
+
+    local find = buildFind(preset, opts.zone and (opts.zone:gsub("\"", "")))
+    if not find then
+        fail("Zone unknown.", "Retry once the zone name shows, or add -in (Zone).")
+        return
+    end
+    messages[kind] = opts.text
+    opts.find = find
+    opts.who = find.who
+    opts.limit = opts.limit or FIND_LIMIT
+    if not opts.useCooldown then
+        opts.useCooldown = true
+        opts.cooldownSeconds = FIND_COOLDOWN
+    end
+    runWho(opts)
 end
 
 -- Every seller of the listing once, in listing order, minus yourself. The results already name you "player"; the name check also catches a listing that spells you out.
@@ -249,8 +366,9 @@ local LISTING_HINTS = {
 local function whisperSellers(input)
     local opts = ns.ParseFlags(trim(input))
     if ns.FlagMistake(opts, true) then return end
-    if ns.UsedWho(opts) then
-        fail("-who doesn't apply to /ws.", "It reads the auction house listings.")
+    local foreign = ns.UsedBracket(opts, "-who") and "-who" or ns.UsedBracket(opts, "-in") and "-in"
+    if foreign then
+        fail(foreign .. " doesn't apply to /ws.", "It reads the auction house listings.")
         return
     end
 
@@ -308,6 +426,9 @@ SlashCmdList["WHISPERTARGET"] = whisperTarget
 
 SLASH_WHISPERWHO1 = "/ww"
 SlashCmdList["WHISPERWHO"] = whisperWho
+
+SLASH_WHISPERFIND1 = "/wf"
+SlashCmdList["WHISPERFIND"] = whisperFind
 
 SLASH_WHISPERSELLERS1 = "/ws"
 SlashCmdList["WHISPERSELLERS"] = whisperSellers

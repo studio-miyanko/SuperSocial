@@ -104,26 +104,6 @@ local function cooldownStatus()
     note(count .. " on cooldown, longest " .. ns.FormatRemaining(longest) .. " left. /ss -cd clear empties it.")
 end
 
-local function quietCommand(arg)
-    local target
-    if arg == "" then
-        target = not ns.QuietBlasts()
-    elseif arg == "on" then
-        target = true
-    elseif arg == "off" then
-        target = false
-    else
-        note("Usage: /ss quiet toggles the counter, /ss quiet on and /ss quiet off set it.")
-        return
-    end
-    ns.SetQuietBlasts(target)
-    if target then
-        ok("Quiet mode on.", "Runs show one counter instead of every whisper.")
-    else
-        ok("Quiet mode off.", "Every whisper prints again.")
-    end
-end
-
 local function adminCommand(input)
     -- Keep the raw form so block/unblock names keep their capitalization.
     local raw = trim(input)
@@ -145,10 +125,6 @@ local function adminCommand(input)
         ok("Cooldown list cleared.")
     elseif input:match("^%-cd%s") then
         cooldownName(trim(raw:match("^%S+%s+(.*)$")))
-    elseif input == "quiet" then
-        quietCommand("")
-    elseif input:match("^quiet%s") then
-        quietCommand(trim(input:match("^%S+%s+(.*)$")))
     elseif input == "rate" then
         note("Send rate " .. string.format("%.2f", ns.PacingRate()) .. "/s, learned from the server. /ss rate reset restores the default.")
     elseif input == "rate reset" then
@@ -165,5 +141,6 @@ local function adminCommand(input)
     end
 end
 
-SLASH_SUPERSOCIAL1 = "/ss"
+SLASH_SUPERSOCIAL1 = "/supersocial"
+SLASH_SUPERSOCIAL2 = "/ss"
 SlashCmdList["SUPERSOCIAL"] = adminCommand

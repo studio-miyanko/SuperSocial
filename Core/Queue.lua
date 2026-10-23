@@ -49,10 +49,12 @@ local IGNORING_PATTERN = toPattern(ERR_IGNORING_YOU_S)
 -- An ambiguous name is refused outright and never echoes, so without this it would burn the whole try budget before the run gave up on it.
 local AMBIGUOUS_PATTERN = toPattern(ERR_CHAT_PLAYER_AMBIGUOUS_S)
 
--- Trial accounts draw their own rate-block wording instead of the throttle line; treat it as the same cap. The prefix match covers the store-link markup the full string carries.
+-- Trial accounts draw their own rate-block wording instead of the throttle line; treat it as the same cap. The prefix is the localized sentence ahead of the store-link markup, so a line with other markup still matches.
+local TRIAL_PREFIX = ERR_CHAT_RESTRICTED:match("^(.-)%s*|") or ERR_CHAT_RESTRICTED
+
 local function isCapVerdict(msg)
     if msg == ERR_CHAT_THROTTLED or msg == ERR_CHAT_RESTRICTED or msg == ERR_CHAT_RESTRICTED_TRIAL then return true end
-    return msg:find("^Free Trial accounts cannot send unlimited tells") ~= nil
+    return msg:sub(1, #TRIAL_PREFIX) == TRIAL_PREFIX
 end
 
 -- The learned refill rate lives in the saved variables, so calibration survives reloads and sessions.
@@ -88,20 +90,7 @@ function ns.SendEta(count)
     return "~" .. math.ceil(secs) .. "s"
 end
 
--- Quiet mode is on by default: a blast's own echo lines are noise, and the closing verdict is the honest record.
-function ns.QuietBlasts()
-    SuperSocialDB = SuperSocialDB or {}
-    if SuperSocialDB.quietBlasts == nil then return true end
-    return SuperSocialDB.quietBlasts
-end
-
-function ns.SetQuietBlasts(on)
-    SuperSocialDB = SuperSocialDB or {}
-    SuperSocialDB.quietBlasts = on and true or false
-    return SuperSocialDB.quietBlasts
-end
-
--- One chat line per run, rewritten where it stands as the count moves, so a quiet run still shows what it is doing. It stays a counter to the end: the closing verdict is appended as its own message instead, so the outcome is always the bottom line no matter what else printed during the run. The addon's own prefix and any chat timestamp sit ahead of the payload, so the payload is always the line's suffix. Rewriting is the only option here, because RemoveMessagesByPredicate strips a chat frame's hyperlinks along with the line.
+-- One chat line per run, rewritten where it stands as the count moves, so a run with its echoes muted still shows what it is doing. It stays a counter to the end: the closing verdict is appended as its own message instead, so the outcome is always the bottom line no matter what else printed during the run. The addon's own prefix and any chat timestamp sit ahead of the payload, so the payload is always the line's suffix. Rewriting is the only option here, because RemoveMessagesByPredicate strips a chat frame's hyperlinks along with the line.
 local function writeProgress(text)
     local frame = DEFAULT_CHAT_FRAME
     local previous = progressText
@@ -561,9 +550,8 @@ ChatFrameUtil.AddMessageEventFilter("CHAT_MSG_SYSTEM", function(_, _, msg)
     if isCapVerdict(msg) and (capTimer or probing or #unconfirmed > 0) then return true end
 end)
 
--- Mute a run's own "To Name:" echoes, so the replies they draw aren't buried under fifty lines of your own outgoing text. The Y/Z counter stands in for them. Every bulk command is hidden the same way, /rr included; only /wt is left, because a single hand-aimed whisper is its own confirmation and starts no run to count. The queue's delivery ledger is unaffected, because it counts echoes on its own event frame and message filters never reach that.
+-- Mute a run's own "To Name:" echoes, always, so the replies they draw aren't buried under fifty lines of your own outgoing text. The Y/Z counter stands in for them. Every bulk command is hidden the same way, /rr included; only /wt is left, because a single hand-aimed whisper is its own confirmation and starts no run to count. The queue's delivery ledger is unaffected, because it counts echoes on its own event frame and message filters never reach that.
 ChatFrameUtil.AddMessageEventFilter("CHAT_MSG_WHISPER_INFORM", function(_, _, text, target)
-    if not ns.QuietBlasts() then return end
     local owned = ownedRecord(target)
     local kind = owned and owned.texts[text]
     if kind == "blast" or kind == "reply" then return true end

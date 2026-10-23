@@ -6,7 +6,7 @@ local fail = ns.Fail
 local note = ns.Note
 local plural = ns.Plural
 
--- /rr replies to everyone whispered via /ww who has whispered back and hasn't been answered yet. /ww recipients accumulate across blasts; the listener below marks their replies as pending and the queue reports every outgoing whisper via ns.OnWhisperDelivered. Personal answers — an /rr or a manual whisper — are sticky: further whispers from that person won't re-queue them. Only a fresh /ww that includes them starts a new exchange.
+-- /rr replies to everyone whispered via /ww who has whispered back and hasn't been answered yet. /ww recipients accumulate across blasts; the listener below marks their replies as pending and the queue reports every outgoing whisper via ns.OnWhisperDelivered. Personal answers, an /rr or a manual whisper, are sticky: further whispers from that person won't re-queue them. Only a fresh /ww that includes them starts a new exchange.
 
 -- Tracking lives in the saved variables, so a /reload mid-session can't drop the people still waiting on an answer. Entries age out after TRACK_MINUTES, because a reply is an LFM conversation: past that window it's stale and answering it would read as spam, not as a reply.
 local TRACK_MINUTES = 15
@@ -68,7 +68,7 @@ function ns.OnWhisperDelivered(fullName, personal)
     if personal then db.answered[key] = true end
 end
 
--- Called by /ww after a send: recipients accumulate across blasts. A fresh blast re-arms anyone /rr already answered — new solicitation, new exchange.
+-- Called by /ww after a send: recipients accumulate across blasts. A fresh blast re-arms anyone /rr already answered: new solicitation, new exchange.
 function ns.TrackWhispered(names)
     local db = loadTracking()
     local now = time()
@@ -115,7 +115,7 @@ local function replyRecent(input)
     pruneTracking(db)
 
     local command = input:lower()
-    if command == "reset" or command == "clear" then
+    if command == "reset" then
         wipe(db.whispered)
         wipe(db.pending)
         wipe(db.answered)
@@ -126,8 +126,9 @@ local function replyRecent(input)
 
     local opts = ns.ParseFlags(input)
     if ns.FlagMistake(opts, false) then return end
-    if ns.UsedWho(opts) then
-        fail("-who doesn't apply to /rr.", "It answers people who already whispered you.")
+    local foreign = ns.UsedBracket(opts, "-who") and "-who" or ns.UsedBracket(opts, "-in") and "-in"
+    if foreign then
+        fail(foreign .. " doesn't apply to /rr.", "It answers people who already whispered you.")
         return
     end
     if opts.useCooldown then

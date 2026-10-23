@@ -11,10 +11,10 @@ local function trim(s)
 end
 
 -- Every flag parseFlags understands, used to catch one misplaced after the message.
-local FLAG_WORDS = { ["-limit"] = true, ["-skip"] = true, ["-only"] = true, ["-cd"] = true, ["-who"] = true }
+local FLAG_WORDS = { ["-limit"] = true, ["-skip"] = true, ["-only"] = true, ["-cd"] = true, ["-who"] = true, ["-in"] = true }
 
 -- Flags whose value is a bracket group, mapped to the opts field the group fills.
-local BRACKET_FLAGS = { ["-who"] = "who", ["-skip"] = "terms", ["-only"] = "includeTerms" }
+local BRACKET_FLAGS = { ["-who"] = "who", ["-in"] = "zone", ["-skip"] = "terms", ["-only"] = "includeTerms" }
 
 -- A bracket flag may arrive glued to its opening bracket, so "-skip(mage)" still names the flag.
 local function flagName(token)
@@ -82,7 +82,8 @@ local function parseFlags(input)
     local cursor = 1
     local opts = { terms = {}, includeTerms = {} }
     while cursor <= #tokens do
-        local flag = tokens[cursor]
+        -- Flags match in any case; readBracket still reads the group's content from the raw token.
+        local flag = tokens[cursor]:lower()
         local name = flagName(flag)
         local value = tokens[cursor + 1]
         if flag == "-limit" then
@@ -112,8 +113,8 @@ local function parseFlags(input)
             local content, mistake, nextCursor = readBracket(tokens, cursor, name)
             if not content then
                 if not opts.bracketError then opts.bracketError = { flag = name, mistake = mistake } end
-            elseif name == "-who" then
-                opts.who = content
+            elseif name == "-who" or name == "-in" then
+                opts[BRACKET_FLAGS[name]] = content
             else
                 -- -skip and -only may repeat; every group adds to the same bucket.
                 local bucket = opts[BRACKET_FLAGS[name]]
@@ -145,6 +146,7 @@ end
 -- One worked example per bracket flag and one line per way a group can go wrong, so the nudge names the actual slip.
 local BRACKET_EXAMPLES = {
     ["-who"] = "-who (mage 50-60 stormwind)",
+    ["-in"] = "-in (Searing Gorge)",
     ["-skip"] = "-skip (warlock z-maraudon)",
     ["-only"] = "-only (priest c-paladin)",
 }
@@ -173,9 +175,9 @@ local function flagMistake(opts, allowCooldown)
     return true
 end
 
--- A -who that failed to parse still counts as used, so commands without a /who can reject it by name.
-local function usedWho(opts)
-    return opts.who ~= nil or (opts.bracketError ~= nil and opts.bracketError.flag == "-who")
+-- A -who or -in that failed to parse still counts as used, so commands without it can reject it by name. Only for those two single-value flags; -skip and -only always hold a table.
+local function usedBracket(opts, flag)
+    return opts[BRACKET_FLAGS[flag]] ~= nil or (opts.bracketError ~= nil and opts.bracketError.flag == flag)
 end
 
 -- A keyed term matches one field; a bare term is a substring of the class, the zone or the name, so "war" catches Warriors, Warsong Gulch and Warence alike.
@@ -209,6 +211,6 @@ end
 ns.Trim = trim
 ns.ParseFlags = parseFlags
 ns.FlagMistake = flagMistake
-ns.UsedWho = usedWho
+ns.UsedBracket = usedBracket
 ns.IsFiltered = isFiltered
 ns.IsIncluded = isIncluded
